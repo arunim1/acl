@@ -5,7 +5,7 @@ import matplotlib.pyplot as plt
 # Step 1: Load the Data with Polars
 # ================================
 # Replace 'your_data.csv' with the actual path to your CSV file
-df = pl.read_csv("./lichess_db_standard_2000rated_2018-01.csv", infer_schema_length=0)
+df = pl.read_csv("./lichess_moment.csv", infer_schema_length=0)
 
 # ================================
 # Step 2: Data Transformation with Polars
@@ -44,10 +44,12 @@ plt.colorbar(scatter, label='Eval')
 plt.title('Time Spent vs. Centipawn Loss, colored by Eval')
 plt.xlabel('Time Spent (seconds)')
 plt.ylabel('Centipawn Loss')
-plt.xscale('symlog', linthresh=1)  # Symmetric log scale with linear region below 1 second
+plt.xscale('symlog', linthresh=60)  # Symmetric log scale with linear region below 1 minute
+plt.yscale('symlog', linthresh=20)  # Symmetric log scale 
+
 plt.grid(True, alpha=0.3)
 # plt.tight_layout()
-plt.savefig('time_spent_centipawn_loss.png', dpi=300, bbox_inches='tight')
+plt.savefig('test.png', dpi=300, bbox_inches='tight')
 plt.close()
 
 print("Plots have been generated and saved as PNG files.")
