@@ -7,7 +7,6 @@ from typing import Optional
 class ExperimentConfig:
     # Data source
     pgn_url: str = "https://database.lichess.org/standard/lichess_db_standard_rated_2018-01.pgn.zst"
-    output_file: str = "lichess_moment.csv"
     chunk_size: int = 1024 * 1024  # 1MB chunks for streaming
     
     # Game filtering

@@ -57,7 +57,7 @@ class ChessParser:
             return
 
         # Get time control values
-        initial_time, increment = self.parse_time_control(state.metadata.get('TimeControl', '180+2'))
+        initial_time, increment = self.parse_time_control(state.metadata.get('TimeControl', '0+0'))
 
         for move_line in state.moves:
             matches = list(self.MOVE_PATTERN.finditer(move_line))
