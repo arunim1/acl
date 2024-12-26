@@ -2,70 +2,139 @@ import polars as pl
 import matplotlib.pyplot as plt
 import numpy as np
 import os
+import re
+from math import ceil, sqrt
 
-# list the csv files in the current directory
-files = [f for f in os.listdir('.') if f.endswith('.csv')]
-fname = files[0]
-df = pl.read_csv(fname, infer_schema_length=0)
+def extract_time_control(filename):
+    """Extract base time and increment from filename."""
+    match = re.search(r'_(\d+)\+(\d+)\.csv$', filename)
+    if match:
+        return int(match.group(1)), int(match.group(2))
+    return None, None
 
-# Extract numeric move number and side using Polars' string extraction
-df = df.with_columns([
-    # Extracting numeric move number from "Move Number"
-    pl.col("Move Number").str.extract(r"(\d+)", 1).cast(pl.Int64).alias("Numeric Move"),
-    # Extracting side from "Move Number" (last character)
-    pl.col("Move Number").str.slice(-1, 1).alias("Side")
-])
+def aggregate_by_time(df):
+    """Compute mean and std dev of centipawn loss for each second spent."""
+    aggs = [
+        pl.col("Centipawn Loss").mean().alias("mean_loss"),
+        pl.col("Centipawn Loss").std().alias("std_loss"),
+        pl.len().alias("n_moves")
+    ]
+    return df.group_by("Time Spent").agg(aggs).sort("Time Spent")
 
-# without any moves with move number < 10
-# df = df.filter(pl.col("Numeric Move") >= 10)
+def create_plot(df, title, subplot, base_time):
+    """Create a single plot with the given data."""
+    # Aggregate data by time spent
+    agg_df = aggregate_by_time(df)
+    agg_df = agg_df.filter(pl.col("n_moves") >= 10)  # Only show points with enough data
+    
+    x_values = agg_df["Time Spent"].to_numpy()
+    y_values = agg_df["mean_loss"].to_numpy()
+    y_std = agg_df["std_loss"].to_numpy()
+    
+    max_time = base_time / 3
+    
+    # Plot mean line
+    subplot.plot(x_values, y_values, '-', linewidth=1, alpha=0.8, label='Mean')
+    
+    # Plot standard deviation band
+    subplot.fill_between(x_values, 
+                        y_values - y_std,
+                        y_values + y_std,
+                        alpha=0.2,
+                        label='±1 std dev')
+    
+    # subplot.set_ylim(0, 10)  # Max centipawn loss of 10
+    subplot.set_xlim(0, max_time + 1)
+    subplot.set_title(f'{title}\n(n={df.height:,} total moves)')
+    subplot.set_xlabel('Time Spent (seconds)')
+    subplot.set_ylabel('Centipawn Loss')
 
-# Convert to pandas for plotting since seaborn expects pandas DataFrames
-df_pandas = df.to_pandas()
+    # Linear scale with appropriate ticks
+    x_ticks = np.linspace(0, max_time, 6)  # 6 ticks including 0
+    y_ticks = np.linspace(0, 10, 6)  # 6 ticks including 0
+    
+    subplot.set_xticks(x_ticks)
+    subplot.set_yticks(y_ticks)
 
+    # Grid and legend
+    subplot.grid(True, which='major', linestyle='-', alpha=0.3)
+    subplot.legend(loc='upper right', fontsize='small')
 
-# Time Spent vs. Centipawn Loss, 
-# # Normalize Eval values for color mapping
-# eval_values = df_pandas['Eval'].astype(float)  
-x_values = df_pandas['Time Spent'].astype(float)
-y_values = df_pandas['Centipawn Loss'].astype(float)
+def main(only_no_increment=True):
+    # List CSV files in the output directory
+    output_dir = 'output'
+    files = [f for f in os.listdir(output_dir) if f.endswith('.csv')]
+    
+    # Filter and sort files
+    valid_files = []
+    for f in files:
+        base_time, increment = extract_time_control(f)
+        if base_time is not None:
+            if only_no_increment and increment == 0:
+                valid_files.append((f, base_time, increment))
+            elif not only_no_increment:
+                valid_files.append((f, base_time, increment))
+    
+    # Sort by base time
+    valid_files.sort(key=lambda x: x[1])
+    
+    if not valid_files:
+        print("No valid CSV files found!")
+        return
 
-# %%
-plt.figure(figsize=(10, 6))
-scatter = plt.scatter(x_values, y_values, alpha=0.1, s=4)
+    # Read and process all dataframes
+    dfs_dict = {}
+    total_moves = 0
+    MIN_MOVES = 10000  # Minimum number of moves required for plotting
+    
+    for fname, base_time, increment in valid_files:
+        df = pl.read_csv(os.path.join(output_dir, fname), infer_schema_length=0)
+        df = df.with_columns([
+            pl.col("Move Number").str.extract(r"(\d+)", 1).cast(pl.Int64).alias("Numeric Move"),
+            pl.col("Move Number").str.slice(-1, 1).alias("Side"),
+            pl.col("Centipawn Loss").cast(pl.Float64),
+            pl.col("Time Spent").cast(pl.Float64)
+        ])
+        # Filter out high centipawn loss and time spent values
+        df = df.filter(
+            (pl.col("Centipawn Loss") <= 10) & 
+            (pl.col("Time Spent") <= base_time / 5)
+        )
+        
+        # Only include time controls with sufficient data
+        if df.height >= MIN_MOVES:
+            dfs_dict[f'{base_time}+{increment}'] = df
+            total_moves += df.height
+        else:
+            print(f"Skipping {base_time}+{increment} (only {df.height:,} moves)")
 
-plt.ylim(0, 200)
-plt.xlim(-1, 1000)
-plt.title('Time Spent vs. Centipawn Loss')
-plt.xlabel('Time Spent (seconds)')
-plt.ylabel('Centipawn Loss')
+    if not dfs_dict:
+        print("No time controls with sufficient data found!")
+        return
 
-# Set symlog scale with clear linear thresholds
-x_threshold = 30
-y_threshold = 10
-plt.xscale('symlog', linthresh=x_threshold)
-plt.yscale('symlog', linthresh=y_threshold)
+    # Calculate grid dimensions
+    n = len(dfs_dict)
+    cols = min(3, n)  # Maximum 3 columns
+    rows = ceil(n / cols)
+    
+    # Create figure
+    fig = plt.figure(figsize=(7*cols, 6*rows))
+    fig.suptitle('Time Spent vs. Mean Centipawn Loss by Time Control' + 
+                 (' (No Increment Games Only)' if only_no_increment else '') +
+                 f'\nTotal moves analyzed: {total_moves:,}',
+                 y=1.02)
+    
+    # Create subplots
+    for i, ((title, df), (_, base_time, _)) in enumerate(zip(dfs_dict.items(), valid_files), 1):
+        ax = fig.add_subplot(rows, cols, i)
+        create_plot(df, title, ax, base_time)
 
-# Create linear spaced ticks within thresholds and log spaced outside
-x_linear = np.arange(0, x_threshold, 5)  # Every 5s in linear region
-x_log = np.arange(x_threshold, 1000, 100)
-x_ticks = np.concatenate([x_linear, x_log])
+    plt.tight_layout()
+    output_name = 'time_vs_centipawn_loss_aggregated_no_increment.png' if only_no_increment else 'time_vs_centipawn_loss_aggregated_all.png'
+    plt.savefig(output_name, dpi=300, bbox_inches='tight')
+    plt.close()
 
-y_linear = np.arange(0, y_threshold, 2)  # Every 2cp in linear region
-y_log = np.arange(y_threshold, 200, 40)  # Log spacing after threshold
-y_ticks = np.concatenate([y_linear, y_log])
+    print(f"Plot has been generated and saved as {output_name}")
 
-plt.xticks(x_ticks)
-plt.yticks(y_ticks)
-
-# Single grid system
-plt.grid(True, which='major', linestyle='-', alpha=0.3)
-
-# Add vertical and horizontal lines at thresholds
-plt.axvline(x=x_threshold, color='k', linestyle='--', alpha=0.5, ymax=0.45)
-plt.axhline(y=y_threshold, color='k', linestyle='--', alpha=0.5, xmax=0.43)
-
-plt.tight_layout()
-plt.savefig('time_vs_centipawn_loss.png', dpi=300, bbox_inches='tight')
-plt.close()
-
-print("Plot has been generated and saved as a PNG file.")
+if __name__ == "__main__":
+    main(only_no_increment=False)  # Set to False to include games with increments

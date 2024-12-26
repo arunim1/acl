@@ -15,7 +15,7 @@ def process_game_chunk(
     lines: list[str],
     state: GameState,
     parser: ChessParser,
-    csv_buffer: list,
+    csv_buffers: dict,
     config: ExperimentConfig
 ) -> tuple[GameState, int]:
     """Process a chunk of game lines and return the updated state and lines processed.
@@ -24,7 +24,7 @@ def process_game_chunk(
         lines: List of lines to process
         state: Current game state
         parser: Chess parser instance
-        csv_buffer: Buffer for CSV output
+        csv_buffers: Dictionary mapping time controls to their CSV buffers
         config: Experiment configuration
         
     Returns:
@@ -41,8 +41,12 @@ def process_game_chunk(
         
         if first_char == '[':
             if line.startswith(parser.EVENT_START):
-                # Process previous game
-                parser.process_moves(state, csv_buffer, config.min_elo)
+                # Process previous game if we have a valid time control
+                if state.metadata.get('TimeControl'):
+                    time_control = state.metadata['TimeControl']
+                    if time_control not in csv_buffers:
+                        csv_buffers[time_control] = []
+                    parser.process_moves(state, csv_buffers[time_control], config.min_elo)
                 # Reset state for new game
                 state = GameState()
             elif config.require_clock_and_eval:
@@ -71,27 +75,26 @@ def stream_decompress_and_process(config: ExperimentConfig) -> None:
 
     pgn_name = config.pgn_url.split('/')[-1] # still includes .pgn.zst
     temp_name = pgn_name.split('.')[0]
+    config.base_name = temp_name
 
-    config.base_name = f"{temp_name}_{config.min_elo}.csv"
+    # Create output directory if it doesn't exist
+    os.makedirs(config.output_dir, exist_ok=True)
     
-    with requests.get(config.pgn_url, stream=True) as response, \
-         open(config.base_name, 'w', newline='') as csv_file:
-        
+    # Dictionary to store CSV writers and files for each time control
+    csv_files = {}
+    csv_writers = {}
+    csv_buffers = {}
+    
+    with requests.get(config.pgn_url, stream=True) as response:
         if response.status_code != 200:
             raise Exception(f"Failed to download file: {response.status_code}")
-
-        # Initialize CSV writer
-        csv_writer = csv.writer(csv_file)
-        if os.stat(config.base_name).st_size == 0:
-            csv_writer.writerow(config.csv_headers)
 
         # Setup decompression
         dctx = zstd.ZstdDecompressor()
         reader = dctx.stream_reader(response.raw)
         
         # Processing state
-        buffer = ''
-        csv_buffer = []
+        buffer = ''  # Initialize as string, not list
         state = GameState()
         total_lines_processed = 0
         
@@ -99,35 +102,62 @@ def stream_decompress_and_process(config: ExperimentConfig) -> None:
         while True:
             chunk = reader.read(config.chunk_size)
             if not chunk:
+                # Process final game if needed
+                if state.metadata.get('TimeControl'):
+                    time_control = state.metadata['TimeControl']
+                    if time_control not in csv_buffers:
+                        csv_buffers[time_control] = []
+                    parser.process_moves(state, csv_buffers[time_control], config.min_elo)
                 break
-                
-            buffer += chunk.decode('utf-8', errors='replace')
-            lines = buffer.split('\n')
-            buffer = lines.pop()  # Keep incomplete line
 
-            # Process chunk of lines
-            state, lines_processed = process_game_chunk(
-                lines, state, parser, csv_buffer, config
-            )
+            buffer += chunk.decode('utf-8')
+            lines = buffer.split('\n')
+            
+            # Keep last partial line in buffer
+            buffer = lines[-1]
+            lines = lines[:-1]
+            
+            # Process chunk
+            state, lines_processed = process_game_chunk(lines, state, parser, csv_buffers, config)
             total_lines_processed += lines_processed
 
-            # Write buffer if it's large enough
-            if len(csv_buffer) > config.max_csv_buffer_size:
-                csv_writer.writerows(csv_buffer)
-                csv_buffer.clear()
+            # Write buffers to files when they get too large
+            for tc, buf in csv_buffers.items():
+                if len(buf) >= config.max_csv_buffer_size:
+                    if tc not in csv_files:
+                        # Create new file for this time control
+                        filename = f"{config.output_dir}/{config.base_name}_{tc}.csv"
+                        csv_files[tc] = open(filename, 'w', newline='')
+                        csv_writers[tc] = csv.writer(csv_files[tc])
+                        # Write headers for new file
+                        csv_writers[tc].writerow(config.csv_headers)
+                    
+                    # Write buffer to file
+                    csv_writers[tc].writerows(buf)
+                    csv_buffers[tc] = []
 
             if config.test_mode and total_lines_processed >= config.test_max_lines:
                 break
 
-        # Process final game and write remaining buffer
-        parser.process_moves(state, csv_buffer, config.min_elo)
-        if csv_buffer:
-            csv_writer.writerows(csv_buffer)
+        # Write remaining buffers and close files
+        for time_control, buffer in csv_buffers.items():
+            if buffer:
+                if time_control not in csv_files:
+                    filename = f"{config.output_dir}/{config.base_name}_{time_control}.csv"
+                    csv_files[time_control] = open(filename, 'w', newline='')
+                    csv_writers[time_control] = csv.writer(csv_files[time_control])
+                    csv_writers[time_control].writerow(config.csv_headers)
+                csv_writers[time_control].writerows(buffer)
+
+        # Close all files
+        for file in csv_files.values():
+            file.close()
 
 def main(args):
     config = ExperimentConfig(
         test_max_lines=args.test_max_lines,
         enable_profiling=args.enable_profiling,
+        test_mode=not args.not_test_mode,
     )
 
     if config.enable_profiling:
@@ -158,6 +188,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Process chess games from a compressed PGN file.')
     parser.add_argument('--test-max-lines', type=int, default=ExperimentConfig().test_max_lines)
     parser.add_argument('--enable-profiling', action='store_true')
+    parser.add_argument('--not-test-mode', action='store_true')
 
     args = parser.parse_args()
     main(args)

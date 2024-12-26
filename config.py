@@ -9,6 +9,10 @@ class ExperimentConfig:
     pgn_url: str = "https://database.lichess.org/standard/lichess_db_standard_rated_2018-01.pgn.zst"
     chunk_size: int = 1024 * 1024  # 1MB chunks for streaming
     
+    # Output configuration
+    output_dir: str = "output"
+    base_name: str = ""  # Will be set based on pgn filename
+    
     # Game filtering
     min_elo: int = 2000
     require_clock_and_eval: bool = True
