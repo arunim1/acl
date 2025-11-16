@@ -8,8 +8,8 @@ import io
 import time
 from typing import TextIO, BinaryIO
 
-from config import ExperimentConfig
-from chess_parser import ChessParser, GameState
+from utils.config import ExperimentConfig
+from utils.chess_parser import ChessParser, GameState
 
 def process_game_chunk(
     lines: list[str],

@@ -25,7 +25,7 @@ class ExperimentConfig:
     
     # Performance monitoring
     enable_profiling: bool = True
-    profile_output: str = "profile_stats.prof"
+    profile_output: str = "results/profile_stats.prof"
     
     # CSV Output
     csv_headers = ['Move Number', 'Eval', 'Centipawn Loss', 'Time Left', 'Time Spent']
